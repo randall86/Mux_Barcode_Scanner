@@ -2,39 +2,44 @@
 #include <SimpleTimer.h>
 #include <SoftwareSerial.h>
 
-#define MUX_RX 10
-#define MUX_TX 11
+#define MUX_A2 7
+#define MUX_A1 6
+#define MUX_A0 5
+#define MUX_EN 4
+#define MUX_RX 3
+#define MUX_TX 2
 
-#define FIXTURE_SW_PIN 6
+#define FIXTURE_SW 9
+#define FIXTURE_LED 8
 
 //expander pins
-#define SCANNER_LED_1 PIN0_0
-#define SCANNER_LED_2 PIN0_1
-#define SCANNER_LED_3 PIN0_2
-#define SCANNER_LED_4 PIN0_3
-#define SCANNER_LED_5 PIN0_4
-#define SCANNER_LED_6 PIN0_5
-#define SCANNER_LED_7 PIN0_6
-#define SCANNER_LED_8 PIN0_7
+#define BSCANNER_EN1 PIN0_0
+#define BSCANNER_EN2 PIN0_1
+#define BSCANNER_EN3 PIN0_2
+#define BSCANNER_EN4 PIN0_3
+#define BSCANNER_EN5 PIN0_4
+#define BSCANNER_EN6 PIN0_5
+#define BSCANNER_EN7 PIN0_6
+#define BSCANNER_EN8 PIN0_7
 
-#define SCANNER_EN_1 PIN1_0
-#define SCANNER_EN_2 PIN1_1
-#define SCANNER_EN_3 PIN1_2
-#define SCANNER_EN_4 PIN1_3
-#define SCANNER_EN_5 PIN1_4
-#define SCANNER_EN_6 PIN1_5
-#define SCANNER_EN_7 PIN1_6
-#define SCANNER_EN_8 PIN1_7
+#define BSCANNER_LED1 PIN1_0
+#define BSCANNER_LED2 PIN1_1
+#define BSCANNER_LED3 PIN1_2
+#define BSCANNER_LED4 PIN1_3
+#define BSCANNER_LED5 PIN1_4
+#define BSCANNER_LED6 PIN1_5
+#define BSCANNER_LED7 PIN1_6
+#define BSCANNER_LED8 PIN1_7
 
 #define DEBOUNCE_FREQ_MSEC 200 //stable time before switch state changed
 #define TIMER_FREQ_MSEC 50 //read the switch every 50ms
 
 DTIOI2CtoParallelConverter g_ioExpandr(0x74);  //PCA9539 I/O Expander (with A1 = 0 and A0 = 0)
 
-SoftwareSerial barcode_serial(MUX_RX, MUX_TX); // RX, TX
+SoftwareSerial g_muxSerial(MUX_RX, MUX_TX); // RX, TX
 
 //SimpleTimer object
-SimpleTimer timer;
+SimpleTimer g_timer;
 
 byte g_debouncedState = 0;
 
@@ -45,7 +50,7 @@ bool debounceSW(byte *state)
     bool state_changed = false;
 
     //read the fixture switch state
-    byte raw_state = digitalRead(FIXTURE_SW_PIN);
+    byte raw_state = digitalRead(FIXTURE_SW);
     *state = g_debouncedState;
 
     if (raw_state == g_debouncedState)
@@ -92,20 +97,39 @@ void setup()
   Serial.begin(115200);
   Wire.begin(); //need to start the Wire for I2C devices to function
   
-  // set the data rate for the SoftwareSerial port
-  barcode_serial.begin(9600);
+  //set the data rate for the SoftwareSerial port
+  g_muxSerial.begin(9600);
 
+  //init the barcode scanner enable pins and LED as output
+  g_ioExpandr.portMode0(ALLOUTPUT);
+  g_ioExpandr.digitalWritePort0(0xFF);
+  g_ioExpandr.portMode1(ALLOUTPUT);
+  g_ioExpandr.digitalWritePort1(0xFF);
 
+  //init the MUX enable pins and address pins as output
+  pinMode(MUX_EN, OUTPUT);
+  digitalWrite(MUX_EN, LOW);
+  pinMode(MUX_A0, OUTPUT);
+  pinMode(MUX_A1, OUTPUT);
+  pinMode(MUX_A2, OUTPUT);
+  digitalWrite(MUX_A0, LOW);
+  digitalWrite(MUX_A1, LOW);
+  digitalWrite(MUX_A2, LOW);
+
+  //init the fixture LED output pin and sw detection input pin
+  pinMode(FIXTURE_LED, OUTPUT);
+  digitalWrite(FIXTURE_LED, HIGH);
+  pinMode(FIXTURE_SW, INPUT);
 
   //initialize the debounce timer
-  timer.setInterval(TIMER_FREQ_MSEC, debounceSWRoutine);
+  g_timer.setInterval(TIMER_FREQ_MSEC, debounceSWRoutine);
 }
 
 void loop()
 {
-  if(barcode_serial.available())
+  if(g_muxSerial.available())
   {
-    char c = barcode_serial.read();
+    char c = g_muxSerial.read();
   }
 }
 
