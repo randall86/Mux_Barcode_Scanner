@@ -12,7 +12,7 @@
 #define FIXTURE_SW 9
 #define FIXTURE_LED 8
 
-#define SCANNER_DELAY_MSEC 50 //how long to block for reading the scanner data
+#define SCANNER_DELAY_MSEC 5 //how long to block for reading the scanner data
 #define DEBOUNCE_FREQ_MSEC 200 //stable time before switch state changed
 #define TIMER_FREQ_MSEC 50 //read the switch every 50ms
 
@@ -76,22 +76,26 @@ void scanBScanner(byte index)
   //enable barcode scanning
   g_ioExpandr.digitalWrite0(g_bscanner[index].en_pin, LOW);
 
+  delay(SCANNER_DELAY_MSEC); //delay for complete data
+
+  //disable barcode scanning
+  g_ioExpandr.digitalWrite0(g_bscanner[index].en_pin, HIGH);
+
   //print the barcode scanner index
   Serial.print(index);
   Serial.print(":");
-  
+
   //get the scanned data
-  while(g_muxSerial.available())
+  if(g_muxSerial.available())
   {
-    Serial.write(g_muxSerial.read());
-    delay(SCANNER_DELAY_MSEC); //delay for complete data
+    while(g_muxSerial.available())
+    {
+      Serial.write(g_muxSerial.read());
+    }
   }
 
   //print LF to indicate end of data
   Serial.println();
-  
-  //disable barcode scanning
-  g_ioExpandr.digitalWrite0(g_bscanner[index].en_pin, HIGH);
 }
 
 //returns true if state changed
