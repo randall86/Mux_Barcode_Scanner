@@ -2,6 +2,8 @@
 #include <SimpleTimer.h>
 #include <SoftwareSerial.h>
 
+//#define DEBUG
+
 #define THUMB_SW_BCD8 A3
 #define THUMB_SW_BCD4 A2
 #define THUMB_SW_BCD2 A1
@@ -21,7 +23,7 @@
 #define DEBOUNCE_FREQ_MSEC 200 //stable time before switch state changed
 #define TIMER_FREQ_MSEC 50 //read the switch every 50ms
 
-#define BSCANNER_MAX_NUM 8
+#define BSCANNER_MAX_NUM 6 //TODO: set max to 6 only, this is temp as the actual FIXTURE_LED is not connected
 #define BSCANNER_BIT_MASK ((1 << BSCANNER_MAX_NUM) - 1)
 
 #define GET_BIT(val, shift) ((val >> (shift & BSCANNER_BIT_MASK)) & 1)
@@ -47,9 +49,9 @@ bscanner_param_t g_bscanner[BSCANNER_MAX_NUM] =
   {0x2, PIN0_2, PIN1_2},
   {0x3, PIN0_3, PIN1_3},
   {0x4, PIN0_4, PIN1_4},
-  {0x5, PIN0_5, PIN1_5},
-  {0x6, PIN0_6, PIN1_6},
-  {0x7, PIN0_7, PIN1_7}
+  {0x5, PIN0_5, PIN1_5}
+  //{0x6, PIN0_6, PIN1_6}, //TODO: set max to 6 only, this is temp as the actual FIXTURE_LED is not connected
+  //{0x7, PIN0_7, PIN1_7}
 };
 
 //PCA9539 I/O Expander (with A1 = 0 and A0 = 0)
@@ -70,7 +72,7 @@ bool g_isFixtureRemoved = false;
 
 byte g_barcode_reply[MAX_BARCODE_DATA] = {0};
 
-void decodeBScannerData(byte * raw_data, byte len)
+void decodeBScannerData(byte bscanner_index, byte * raw_data, byte len)
 {
   //received data is at least 7 bytes
   if(len > CODEXML_HDR_LEN)
@@ -96,16 +98,23 @@ void decodeBScannerData(byte * raw_data, byte len)
     //send the decoded data
     if(0 != start_index)
     {
+      //print the barcode scanner index
+      Serial.print(bscanner_index);
+      Serial.print(":");
+    
       for(byte index = start_index; index < len; index++)
       {
         Serial.write(raw_data[index]);
       }
+
+      //print LF to indicate end of data
+      Serial.println();
     }
   }
 }
 
 //trigger the barcode scanning via command
-void scanBScannerCmd(byte index)
+void scanBScannerCmd(byte bscanner_index)
 {
   bool data_available = false;
   byte count = 0;
@@ -131,7 +140,7 @@ void scanBScannerCmd(byte index)
   
   if(data_available)
   {
-    Serial.flush();
+    //Serial.flush();
 #ifdef DEBUG
     for(byte i = 0; i < count; i++)
     {
@@ -139,32 +148,25 @@ void scanBScannerCmd(byte index)
     }
     Serial.println();
 #else
-    //print the barcode scanner index
-    Serial.print(index);
-    Serial.print(":");
-
     //decode and send the data
-    decodeBScannerData(g_barcode_reply, count);
-  
-    //print LF to indicate end of data
-    Serial.println();
+    decodeBScannerData(bscanner_index, g_barcode_reply, count);
 #endif
   }
 }
 
 //trigger the barcode scanning via the external trigger pin
-void scanBScannerTrig(byte index)
+void scanBScannerTrig(byte bscanner_index)
 {
   g_muxSerial.flush();
   
-  g_ioExpandr.digitalWrite0(g_bscanner[index].en_pin, LOW);
+  g_ioExpandr.digitalWrite0(g_bscanner[bscanner_index].en_pin, LOW);
   NOP; //60ns delay
-  g_ioExpandr.digitalWrite0(g_bscanner[index].en_pin, HIGH);
+  g_ioExpandr.digitalWrite0(g_bscanner[bscanner_index].en_pin, HIGH);
 
   Serial.flush();
 
   //print the barcode scanner index
-  Serial.print(index);
+  Serial.print(bscanner_index);
   Serial.print(":");
 
   //get the scanned data
@@ -180,7 +182,7 @@ void scanBScannerTrig(byte index)
   Serial.println();
 }
 
-void selectBScanner(byte index)
+void selectBScanner(byte bscanner_index)
 {
   //disable the mux
   digitalWrite(MUX_EN, LOW);
@@ -188,9 +190,9 @@ void selectBScanner(byte index)
   NOP; //60ns delay
   
   //update the mux address lines
-  digitalWrite(MUX_A0, GET_BIT(g_bscanner[index].mux_addr, 0));
-  digitalWrite(MUX_A1, GET_BIT(g_bscanner[index].mux_addr, 1));
-  digitalWrite(MUX_A2, GET_BIT(g_bscanner[index].mux_addr, 2));
+  digitalWrite(MUX_A0, GET_BIT(g_bscanner[bscanner_index].mux_addr, 0));
+  digitalWrite(MUX_A1, GET_BIT(g_bscanner[bscanner_index].mux_addr, 1));
+  digitalWrite(MUX_A2, GET_BIT(g_bscanner[bscanner_index].mux_addr, 2));
   
   NOP; //60ns delay
   
@@ -276,7 +278,7 @@ void setup()
   g_ioExpandr.portMode0(ALLOUTPUT);
   g_ioExpandr.digitalWritePort0(0xFF);
   g_ioExpandr.portMode1(ALLOUTPUT);
-  g_ioExpandr.digitalWritePort1(0x00);
+  g_ioExpandr.digitalWritePort1(0xFF);
 
   //init the MUX enable pins
   pinMode(MUX_EN, OUTPUT);
@@ -301,7 +303,12 @@ void setup()
   digitalWrite(FIXTURE_LED, LOW);
   pinMode(FIXTURE_SW, INPUT);
 
-  g_bscannerNum = getBScannerNum(); //get the number of barcode scanners used
+  //get the number of barcode scanners used
+  g_bscannerNum = getBScannerNum(); 
+  if(g_bscannerNum > BSCANNER_MAX_NUM)
+  {
+    g_bscannerNum = BSCANNER_MAX_NUM; //if exceed max, set to max
+  }
 
   //initialize the debounce timer
   g_timer.setInterval(TIMER_FREQ_MSEC, debounceSWRoutine);
@@ -309,11 +316,17 @@ void setup()
 
 void loop()
 {
+  // this is where the "polling" occurs
+  g_timer.run();
+
   //perform scanning if the fixture is in place
   if(g_isFixtureDetected)
   {
     //toggle the fixture detected LED to green
     digitalWrite(FIXTURE_LED, HIGH);
+
+    //TODO: temporary set as the actual FIXTURE_LED is not connected
+    g_ioExpandr.digitalWrite1(PIN1_7, LOW);
     
     //loop through all the barcode scanners
     for(byte index = 0; index < g_bscannerNum; index++)
@@ -336,7 +349,7 @@ void loop()
     digitalWrite(FIXTURE_LED, LOW);
 
     //reset the barcode LED to red
-    g_ioExpandr.digitalWritePort1(0x00);
+    g_ioExpandr.digitalWritePort1(0xFF);
 
     g_isFixtureRemoved = false;
   }
@@ -349,7 +362,7 @@ void loop()
     //loop through all the barcode scanners and toggle the LED
     for(byte index = 0; index < g_bscannerNum; index++)
     {
-      g_ioExpandr.digitalWrite1(g_bscanner[index].led_pin, GET_BIT(result, index));
+      g_ioExpandr.digitalWrite1(g_bscanner[index].led_pin, !GET_BIT(result, index));
     }
   }
 }
