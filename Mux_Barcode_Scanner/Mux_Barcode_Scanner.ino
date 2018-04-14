@@ -23,7 +23,7 @@
 #define DEBOUNCE_FREQ_MSEC 200 //stable time before switch state changed
 #define TIMER_FREQ_MSEC 50 //read the switch every 50ms
 
-#define BSCANNER_MAX_NUM 6 //TODO: set max to 6 only, this is temp as the actual FIXTURE_LED is not connected
+#define BSCANNER_MAX_NUM 8
 #define BSCANNER_BIT_MASK ((1 << BSCANNER_MAX_NUM) - 1)
 
 #define GET_BIT(val, shift) ((val >> (shift & BSCANNER_BIT_MASK)) & 1)
@@ -31,6 +31,11 @@
 
 #define MAX_BARCODE_DATA 64
 #define CODEXML_HDR_LEN 7
+
+#define SEC_TO_MSEC 1000
+#define BYTE_READ_MSEC 100
+
+#define BSCANNER_LIMIT 6 //TODO: demo board max barcode scanner
 
 const byte SOH = 0x01;
 const byte RS = 0x1E;
@@ -49,9 +54,9 @@ bscanner_param_t g_bscanner[BSCANNER_MAX_NUM] =
   {0x2, PIN0_2, PIN1_2},
   {0x3, PIN0_3, PIN1_3},
   {0x4, PIN0_4, PIN1_4},
-  {0x5, PIN0_5, PIN1_5}
-  //{0x6, PIN0_6, PIN1_6}, //TODO: set max to 6 only, this is temp as the actual FIXTURE_LED is not connected
-  //{0x7, PIN0_7, PIN1_7}
+  {0x5, PIN0_5, PIN1_5},
+  {0x6, PIN0_6, PIN1_6},
+  {0x7, PIN0_7, PIN1_7}
 };
 
 //PCA9539 I/O Expander (with A1 = 0 and A0 = 0)
@@ -65,12 +70,47 @@ SoftwareSerial g_muxSerial(MUX_TX, MUX_RX); // RX, TX
 //SimpleTimer object
 SimpleTimer g_timer;
 
+unsigned long g_delay = 3000; //default delat 3 sec
+
 byte g_bscannerNum = 0;
 byte g_debouncedState = 0;
 bool g_isFixtureDetected = false;
 bool g_isFixtureRemoved = false;
 
 byte g_barcode_reply[MAX_BARCODE_DATA] = {0};
+
+bool isPowerOfTwo(byte x)
+{
+  // first x in the below expression is for the case when x is 0
+  return x && (!(x&(x-1)));
+}
+
+//process the scanning results
+void processScanStatus(void)
+{
+  byte result = Serial.read();
+
+  if(result == '#') //if first byte is '#' then it is cmd to change delay
+  {
+    //read the 2nd byte for the cmd value
+    delay(BYTE_READ_MSEC);
+    result = Serial.read();
+
+    //convert the ascii to dec then from sec to msec
+    if(result >= '0' && result <= '9')
+    {
+      g_delay = (result - '0')*SEC_TO_MSEC;
+    }
+  }
+  else if(isPowerOfTwo(result))
+  {
+    //loop through all the barcode scanners and toggle the LED
+    for(byte index = 0; index < BSCANNER_MAX_NUM-1; index++) //TODO: minus 1 as temporary the last relay is used for detection
+    {
+      g_ioExpandr.digitalWrite1(g_bscanner[index].led_pin, !GET_BIT(result, index));
+    }
+  }
+}
 
 void decodeBScannerData(byte bscanner_index, byte * raw_data, byte len)
 {
@@ -140,7 +180,7 @@ void scanBScannerCmd(byte bscanner_index)
   
   if(data_available)
   {
-    //Serial.flush();
+    Serial.flush();
 #ifdef DEBUG
     for(byte i = 0; i < count; i++)
     {
@@ -305,9 +345,9 @@ void setup()
 
   //get the number of barcode scanners used
   g_bscannerNum = getBScannerNum(); 
-  if(g_bscannerNum > BSCANNER_MAX_NUM)
+  if(g_bscannerNum > BSCANNER_LIMIT)
   {
-    g_bscannerNum = BSCANNER_MAX_NUM; //if exceed max, set to max
+    g_bscannerNum = BSCANNER_LIMIT; //if exceed max, set to max
   }
 
   //initialize the debounce timer
@@ -327,6 +367,8 @@ void loop()
 
     //TODO: temporary set as the actual FIXTURE_LED is not connected
     g_ioExpandr.digitalWrite1(PIN1_7, LOW);
+
+    delay(g_delay);
     
     //loop through all the barcode scanners
     for(byte index = 0; index < g_bscannerNum; index++)
@@ -354,16 +396,9 @@ void loop()
     g_isFixtureRemoved = false;
   }
 
-  //process the scanning results
   if(Serial.available())
   {
-    byte result = Serial.read();
-    
-    //loop through all the barcode scanners and toggle the LED
-    for(byte index = 0; index < g_bscannerNum; index++)
-    {
-      g_ioExpandr.digitalWrite1(g_bscanner[index].led_pin, !GET_BIT(result, index));
-    }
+    processScanStatus();
   }
 }
 
