@@ -1,6 +1,7 @@
 #include <DTIOI2CtoParallelConverter.h>
 #include <SimpleTimer.h>
 #include <SoftwareSerial.h>
+#include <EEPROM.h>
 
 //#define DEBUG
 
@@ -37,6 +38,8 @@
 
 #define BSCANNER_LIMIT 6 //TODO: demo board max barcode scanner
 
+const int DELAY_ADDR = 0x00; //store the delay value at the first EEPROM byte
+const byte DEFAULT_DELAY = 3; //default delay is 3 sec
 const byte SOH = 0x01;
 const byte RS = 0x1E;
 
@@ -70,8 +73,7 @@ SoftwareSerial g_muxSerial(MUX_TX, MUX_RX); // RX, TX
 //SimpleTimer object
 SimpleTimer g_timer;
 
-unsigned long g_delay = 3000; //default delat 3 sec
-
+byte g_delay = 0;
 byte g_bscannerNum = 0;
 byte g_debouncedState = 0;
 bool g_isFixtureDetected = false;
@@ -79,35 +81,42 @@ bool g_isFixtureRemoved = false;
 
 byte g_barcode_reply[MAX_BARCODE_DATA] = {0};
 
-bool isPowerOfTwo(byte x)
-{
-  // first x in the below expression is for the case when x is 0
-  return x && (!(x&(x-1)));
-}
-
 //process the scanning results
 void processScanStatus(void)
 {
-  byte result = Serial.read();
+  bool isStatus = false;
+  byte scan_status = Serial.read();
 
-  if(result == '#') //if first byte is '#' then it is cmd to change delay
+  if(scan_status == '#') //check if first byte is '#' then possibly its change delay cmd
   {
     //read the 2nd byte for the cmd value
     delay(BYTE_READ_MSEC);
-    result = Serial.read();
-
-    //convert the ascii to dec then from sec to msec
-    if(result >= '0' && result <= '9')
+    byte cmd_data = Serial.read();
+    if(cmd_data != -1)
     {
-      g_delay = (result - '0')*SEC_TO_MSEC;
+      //convert the ascii to dec
+      if(cmd_data >= '1' && cmd_data <= '9')
+      {
+        g_delay = cmd_data - '0';
+        EEPROM.write(DELAY_ADDR, g_delay); //save to eeprom
+      }
+    }
+    else //if 2nd byte is no data then it is status
+    {
+      isStatus = true;
     }
   }
-  else if(isPowerOfTwo(result))
+  else
+  {
+    isStatus = true;
+  }
+
+  if(isStatus)
   {
     //loop through all the barcode scanners and toggle the LED
     for(byte index = 0; index < BSCANNER_MAX_NUM-1; index++) //TODO: minus 1 as temporary the last relay is used for detection
     {
-      g_ioExpandr.digitalWrite1(g_bscanner[index].led_pin, !GET_BIT(result, index));
+      g_ioExpandr.digitalWrite1(g_bscanner[index].led_pin, !GET_BIT(scan_status, index));
     }
   }
 }
@@ -350,6 +359,16 @@ void setup()
     g_bscannerNum = BSCANNER_LIMIT; //if exceed max, set to max
   }
 
+  //get the delay stored in the EEPROM
+  g_delay = EEPROM.read(DELAY_ADDR);
+
+  //if delay value is invalid set to default and write back to EEPROM
+  if( (g_delay < 1) && (g_delay > 9) )
+  {
+    g_delay = DEFAULT_DELAY;
+    EEPROM.write(DELAY_ADDR, g_delay); //save to eeprom
+  }
+
   //initialize the debounce timer
   g_timer.setInterval(TIMER_FREQ_MSEC, debounceSWRoutine);
 }
@@ -368,7 +387,7 @@ void loop()
     //TODO: temporary set as the actual FIXTURE_LED is not connected
     g_ioExpandr.digitalWrite1(PIN1_7, LOW);
 
-    delay(g_delay);
+    delay(g_delay*SEC_TO_MSEC);
     
     //loop through all the barcode scanners
     for(byte index = 0; index < g_bscannerNum; index++)
