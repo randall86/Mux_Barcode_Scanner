@@ -169,9 +169,17 @@ void scanBScannerCmd(byte bscanner_index)
   byte count = 0;
   
   g_muxSerial.flush();
-  g_muxSerial.print("$%03\r"); //trigger the scanning command
-  
-  delay(SCANNER_DELAY_MSEC); //delay for the command reply
+
+  if(bscanner_index == 0)
+  {
+    g_muxSerial.print("P%C43\r"); //trigger the tri-scanning command
+    delay(SCANNER_DELAY_MSEC*6); //delay 3 sec for the command reply
+  }
+  else
+  {
+    g_muxSerial.print("$%03\r"); //trigger the scanning command
+    delay(SCANNER_DELAY_MSEC); //delay for the command reply
+  }
   
   while(g_muxSerial.available())
   {
