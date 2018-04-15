@@ -282,11 +282,11 @@ void debounceSWRoutine()
   {
     if(sw_state)
     {
-      g_isFixtureRemoved = true;
+      g_isFixtureDetected = true;
     }
     else
     {
-      g_isFixtureDetected = true;
+      g_isFixtureRemoved = true;
     }
   }
 }
