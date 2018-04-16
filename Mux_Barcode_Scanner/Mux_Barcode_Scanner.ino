@@ -1,3 +1,6 @@
+// Mux Barcode Scanner System
+// Rev 1.0 (16/04/2018)
+// - Maxtrax
 #include <DTIOI2CtoParallelConverter.h>
 #include <SimpleTimer.h>
 #include <SoftwareSerial.h>
@@ -18,13 +21,13 @@
 #define MUX_TX 2 //MUX_TX - Receive Data from MUX
 
 #define FIXTURE_SW 9
-#define FIXTURE_LED 8
+#define FIXTURE_DET PIN1_7
 
 #define SCANNER_DELAY_MSEC 500 //how long to block for reading the scanner data via cmd
 #define DEBOUNCE_FREQ_MSEC 200 //stable time before switch state changed
 #define TIMER_FREQ_MSEC 50 //read the switch every 50ms
 
-#define BSCANNER_MAX_NUM 8
+#define BSCANNER_MAX_NUM 6
 #define BSCANNER_BIT_MASK ((1 << BSCANNER_MAX_NUM) - 1)
 
 #define GET_BIT(val, shift) ((val >> (shift & BSCANNER_BIT_MASK)) & 1)
@@ -35,8 +38,6 @@
 
 #define SEC_TO_MSEC 1000
 #define BYTE_READ_MSEC 100
-
-#define BSCANNER_LIMIT 6 //TODO: demo board max barcode scanner
 
 const int DELAY_ADDR = 0x00; //store the delay value at the first EEPROM byte
 const byte DEFAULT_DELAY = 3; //default delay is 3 sec
@@ -50,7 +51,7 @@ typedef struct _bscanner_param_t
   byte led_pin;
 }bscanner_param_t;
 
-bscanner_param_t g_bscanner[BSCANNER_MAX_NUM] =
+bscanner_param_t g_bscanner[BSCANNER_MAX_NUM + 1] =
 {
   {0x0, PIN0_0, PIN1_0},
   {0x1, PIN0_1, PIN1_1},
@@ -58,16 +59,13 @@ bscanner_param_t g_bscanner[BSCANNER_MAX_NUM] =
   {0x3, PIN0_3, PIN1_3},
   {0x4, PIN0_4, PIN1_4},
   {0x5, PIN0_5, PIN1_5},
-  {0x6, PIN0_6, PIN1_6},
-  {0x7, PIN0_7, PIN1_7}
+  {0x6, PIN0_6, PIN1_6} //the last one is used for the status LED
 };
 
 //PCA9539 I/O Expander (with A1 = 0 and A0 = 0)
 DTIOI2CtoParallelConverter g_ioExpandr(0x74);
 
-// As compared to what the Arduino's UART is expecting, RS232 
-// devices use inverted voltage levels to represent 0s and 1s.
-//SoftwareSerial g_muxSerial(MUX_TX, MUX_RX, true); // RX, TX, true - invert the data
+//SoftwareSerial object for the Mux port
 SoftwareSerial g_muxSerial(MUX_TX, MUX_RX); // RX, TX
 
 //SimpleTimer object
@@ -111,12 +109,27 @@ void processScanStatus(void)
 
   if(isStatus)
   {
-    //loop through all the barcode scanners and toggle the LED
-    for(byte index = 0; index < BSCANNER_MAX_NUM-1; index++) //TODO: minus 1 as temporary the last relay is used for detection
+    //loop through all the barcode scanners and toggle the LED, plus 1 for the status LED
+    for(byte index = 0; index < BSCANNER_MAX_NUM + 1; index++)
     {
       g_ioExpandr.digitalWrite1(g_bscanner[index].led_pin, !GET_BIT(scan_status, index));
     }
   }
+}
+
+void sendBScannerData(byte start_index, byte bscanner_index, byte * raw_data, byte len)
+{
+  //print the barcode scanner index
+  Serial.print(bscanner_index);
+  Serial.print(":");
+  
+  for(byte index = start_index; index < len; index++)
+  {
+    Serial.write(raw_data[index]);
+  }
+  
+  //print LF to indicate end of data
+  Serial.println();
 }
 
 void decodeBScannerData(byte bscanner_index, byte * raw_data, byte len)
@@ -145,17 +158,7 @@ void decodeBScannerData(byte bscanner_index, byte * raw_data, byte len)
     //send the decoded data
     if(0 != start_index)
     {
-      //print the barcode scanner index
-      Serial.print(bscanner_index);
-      Serial.print(":");
-    
-      for(byte index = start_index; index < len; index++)
-      {
-        Serial.write(raw_data[index]);
-      }
-
-      //print LF to indicate end of data
-      Serial.println();
+      sendBScannerData(start_index, bscanner_index, raw_data, len);
     }
   }
 }
@@ -165,6 +168,7 @@ void scanBScannerCmd(byte bscanner_index)
 {
   bool data_available = false;
   byte count = 0;
+  memset(g_barcode_reply, 0, MAX_BARCODE_DATA);
   
   g_muxSerial.flush();
 
@@ -203,8 +207,15 @@ void scanBScannerCmd(byte bscanner_index)
     }
     Serial.println();
 #else
-    //decode and send the data
-    decodeBScannerData(bscanner_index, g_barcode_reply, count);
+    if(bscanner_index == 0) //bypass decoding for barcode scanner tri-scanning command
+    {
+      sendBScannerData(1, bscanner_index, g_barcode_reply, count);
+    }
+    else
+    {
+      //decode and send the data
+      decodeBScannerData(bscanner_index, g_barcode_reply, count);
+    }
 #endif
   }
 }
@@ -353,16 +364,14 @@ void setup()
   pinMode(THUMB_SW_BCD4, INPUT);
   pinMode(THUMB_SW_BCD8, INPUT);
 
-  //init the fixture LED output pin and sw detection input pin
-  pinMode(FIXTURE_LED, OUTPUT);
-  digitalWrite(FIXTURE_LED, LOW);
+  //init the sw detection input pin
   pinMode(FIXTURE_SW, INPUT);
 
   //get the number of barcode scanners used
   g_bscannerNum = getBScannerNum(); 
-  if(g_bscannerNum > BSCANNER_LIMIT)
+  if(g_bscannerNum > BSCANNER_MAX_NUM)
   {
-    g_bscannerNum = BSCANNER_LIMIT; //if exceed max, set to max
+    g_bscannerNum = BSCANNER_MAX_NUM; //if exceed max, set to max
   }
 
   //get the delay stored in the EEPROM
@@ -387,11 +396,8 @@ void loop()
   //perform scanning if the fixture is in place
   if(g_isFixtureDetected)
   {
-    //toggle the fixture detected LED to green
-    digitalWrite(FIXTURE_LED, HIGH);
-
-    //TODO: temporary set as the actual FIXTURE_LED is not connected
-    g_ioExpandr.digitalWrite1(PIN1_7, LOW);
+    //set the detection LED to green
+    g_ioExpandr.digitalWrite1(FIXTURE_DET, LOW);
 
     delay(g_delay*SEC_TO_MSEC);
     
@@ -412,10 +418,7 @@ void loop()
   //reset the LEDs when the fixture is removed
   if(g_isFixtureRemoved)
   {
-    //toggle the LED to red when fixture is removed
-    digitalWrite(FIXTURE_LED, LOW);
-
-    //reset the barcode LED to red
+    //reset the barcode LED and detection LED to red
     g_ioExpandr.digitalWritePort1(0xFF);
 
     g_isFixtureRemoved = false;
