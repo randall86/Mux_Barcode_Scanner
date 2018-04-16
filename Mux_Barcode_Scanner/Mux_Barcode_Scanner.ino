@@ -371,7 +371,7 @@ void setup()
   g_delay = EEPROM.read(DELAY_ADDR);
 
   //if delay value is invalid set to default and write back to EEPROM
-  if( (g_delay < 1) && (g_delay > 9) )
+  if( (g_delay < 1) || (g_delay > 9) )
   {
     g_delay = DEFAULT_DELAY;
     EEPROM.write(DELAY_ADDR, g_delay); //save to eeprom
