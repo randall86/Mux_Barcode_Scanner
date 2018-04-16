@@ -92,14 +92,12 @@ void processScanStatus(void)
     //read the 2nd byte for the cmd value
     delay(BYTE_READ_MSEC);
     byte cmd_data = Serial.read();
-    if(cmd_data != -1)
+    
+    //convert the ascii to dec
+    if(cmd_data >= '1' && cmd_data <= '9')
     {
-      //convert the ascii to dec
-      if(cmd_data >= '1' && cmd_data <= '9')
-      {
-        g_delay = cmd_data - '0';
-        EEPROM.write(DELAY_ADDR, g_delay); //save to eeprom
-      }
+      g_delay = cmd_data - '0';
+      EEPROM.write(DELAY_ADDR, g_delay); //save to eeprom
     }
     else //if 2nd byte is no data then it is status
     {
