@@ -1,10 +1,11 @@
 // Mux Barcode Scanner System
-// Rev 1.0 (16/04/2018)
+// Rev 2.0 (17/05/2018)
 // - Maxtrax
 #include <DTIOI2CtoParallelConverter.h>
 #include <SimpleTimer.h>
 #include <SoftwareSerial.h>
 #include <EEPROM.h>
+#include <USBKeyboard.h>
 
 //#define DEBUG
 
@@ -79,57 +80,40 @@ bool g_isFixtureRemoved = false;
 
 byte g_barcode_reply[MAX_BARCODE_DATA] = {0};
 
-//process the scanning results
-void processScanStatus(void)
+//send Keyboard command to indicate start of input data
+void handleStartInput()
 {
-  bool isStatus = false;
-  byte scan_status = Serial.read();
+  Keyboard.sendKeyStroke(KEY_ENTER);
+}
 
-  if(scan_status == '#') //check if first byte is '#' then possibly its change delay cmd
-  {
-    //read the 2nd byte for the cmd value
-    delay(BYTE_READ_MSEC);
-    byte cmd_data = Serial.read();
-    
-    //convert the ascii to dec
-    if(cmd_data >= '1' && cmd_data <= '9')
-    {
-      g_delay = cmd_data - '0';
-      EEPROM.write(DELAY_ADDR, g_delay); //save to eeprom
-    }
-    else //if 2nd byte is no data then it is status
-    {
-      isStatus = true;
-    }
-  }
-  else
-  {
-    isStatus = true;
-  }
+//send Keyboard command to cycle to the subsequent input
+void handleNextInput()
+{
+  Keyboard.sendKeyStroke(KEY_TAB);
+}
 
-  if(isStatus)
-  {
-    //loop through all the barcode scanners and toggle the LED, plus 1 for the status LED
-    for(byte index = 0; index < BSCANNER_MAX_NUM + 1; index++)
-    {
-      g_ioExpandr.digitalWrite1(g_bscanner[index].led_pin, !GET_BIT(scan_status, index));
-    }
-  }
+//send Keyboard command to indicate data input completed
+void handleScanComplete()
+{
+  Keyboard.sendKeyStroke(KEY_ENTER);
+  Keyboard.sendKeyStroke(KEY_ESCAPE);
 }
 
 void sendBScannerData(byte start_index, byte bscanner_index, byte * raw_data, byte len)
 {
   //print the barcode scanner index
-  Serial.print(bscanner_index);
-  Serial.print(":");
+  char data_index[2] = {bscanner_index + '0', 0};
+  Keyboard.print(data_index);
+  Keyboard.print(":");
   
   for(byte index = start_index; index < len; index++)
   {
-    Serial.write(raw_data[index]);
+    char data_byte[2] = {raw_data[index], 0};
+    Keyboard.print(data_byte);
   }
   
   //print LF to indicate end of data
-  Serial.println();
+  Keyboard.print("\n");
 }
 
 void decodeBScannerData(byte bscanner_index, byte * raw_data, byte len)
@@ -199,13 +183,13 @@ void scanBScannerCmd(byte bscanner_index)
   
   if(data_available)
   {
-    Serial.flush();
 #ifdef DEBUG
     for(byte i = 0; i < count; i++)
     {
-      Serial.write(g_barcode_reply[i]);
+      char data_byte[2] = {g_barcode_reply[i], 0};
+      Keyboard.print(data_byte);
     }
-    Serial.println();
+    Keyboard.print("\n");
 #else
     if(bscanner_index == 0) //bypass decoding for barcode scanner tri-scanning command
     {
@@ -229,23 +213,23 @@ void scanBScannerTrig(byte bscanner_index)
   NOP; //60ns delay
   g_ioExpandr.digitalWrite0(g_bscanner[bscanner_index].en_pin, HIGH);
 
-  Serial.flush();
-
   //print the barcode scanner index
-  Serial.print(bscanner_index);
-  Serial.print(":");
+  char data_index[2] = {bscanner_index + '0', 0};
+  Keyboard.print(data_index);
+  Keyboard.print(":");
 
   //get the scanned data
   if(g_muxSerial.available())
   {
     while(g_muxSerial.available())
     {
-      Serial.write(g_muxSerial.read());
+      char data_byte[2] = {g_muxSerial.read(), 0};
+      Keyboard.print(data_byte);
     }
   }
 
   //print LF to indicate end of data
-  Serial.println();
+  Keyboard.print("\n");
 }
 
 void selectBScanner(byte bscanner_index)
@@ -331,7 +315,6 @@ byte getBScannerNum()
 void setup()
 {
   Wire.begin(); //need to start the Wire for I2C devices to function
-  Serial.begin(115200);
   
   // define pin modes for tx, rx
   pinMode(MUX_RX, OUTPUT);
@@ -374,18 +357,10 @@ void setup()
     g_bscannerNum = BSCANNER_MAX_NUM; //if exceed max, set to max
   }
 
-  //get the delay stored in the EEPROM
-  g_delay = EEPROM.read(DELAY_ADDR);
-
-  //if delay value is invalid set to default and write back to EEPROM
-  if( (g_delay < 1) || (g_delay > 9) )
-  {
-    g_delay = DEFAULT_DELAY;
-    EEPROM.write(DELAY_ADDR, g_delay); //save to eeprom
-  }
-
   //initialize the debounce timer
   g_timer.setInterval(TIMER_FREQ_MSEC, debounceSWRoutine);
+
+  Keyboard.init(); //init the USB Keyboard HID driver
 }
 
 void loop()
@@ -400,6 +375,9 @@ void loop()
     g_ioExpandr.digitalWrite1(FIXTURE_DET, LOW);
 
     delay(g_delay*SEC_TO_MSEC);
+
+    //trigger sequence to the start
+    handleStartInput();
     
     //loop through all the barcode scanners
     for(byte index = 0; index < g_bscannerNum; index++)
@@ -410,7 +388,13 @@ void loop()
       //perform the scanning and send the data
       //scanBScannerTrig(index);
       scanBScannerCmd(index);
+
+      //trigger sequence to the next input
+      handleNextInput();
     }
+
+    //trigger sequence for data completion
+    handleScanComplete();
 
     g_isFixtureDetected = false;
   }
@@ -422,11 +406,6 @@ void loop()
     g_ioExpandr.digitalWritePort1(0xFF);
 
     g_isFixtureRemoved = false;
-  }
-
-  if(Serial.available())
-  {
-    processScanStatus();
   }
 }
 
