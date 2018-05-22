@@ -23,7 +23,7 @@
 
 #define FIXTURE_SW 9
 #define FIXTURE_DET PIN1_7
-
+#define START_DELAY_MSEC 3000 //delay before starting the first scanning - 3 seconds
 #define SCANNER_DELAY_MSEC 500 //how long to block for reading the scanner data via cmd
 #define DEBOUNCE_FREQ_MSEC 200 //stable time before switch state changed
 #define TIMER_FREQ_MSEC 50 //read the switch every 50ms
@@ -37,30 +37,27 @@
 #define MAX_BARCODE_DATA 64
 #define CODEXML_HDR_LEN 7
 
-#define SEC_TO_MSEC 1000
-#define BYTE_READ_MSEC 100
-
-const int DELAY_ADDR = 0x00; //store the delay value at the first EEPROM byte
-const byte DEFAULT_DELAY = 3; //default delay is 3 sec
 const byte SOH = 0x01;
 const byte RS = 0x1E;
 
 typedef struct _bscanner_param_t
 {
+  int wait;
   byte mux_addr;
   byte en_pin;
-  byte led_pin;
+  byte delim;
+  byte do_decode;
+  char *cmd;
 }bscanner_param_t;
 
-bscanner_param_t g_bscanner[BSCANNER_MAX_NUM + 1] =
+bscanner_param_t g_bscanner[BSCANNER_MAX_NUM] =
 {
-  {0x0, PIN0_0, PIN1_0},
-  {0x1, PIN0_1, PIN1_1},
-  {0x2, PIN0_2, PIN1_2},
-  {0x3, PIN0_3, PIN1_3},
-  {0x4, PIN0_4, PIN1_4},
-  {0x5, PIN0_5, PIN1_5},
-  {0x6, PIN0_6, PIN1_6} //the last one is used for the status LED
+  {SCANNER_DELAY_MSEC*6, 0x0, PIN0_0, KEY_TAB, 0, "P%C43\r"}, //tri-scanning
+  {SCANNER_DELAY_MSEC, 0x1, PIN0_1, KEY_ENTER, 1, "$%03\r"},
+  {SCANNER_DELAY_MSEC, 0x2, PIN0_2, KEY_ENTER, 1, "$%03\r"},
+  {SCANNER_DELAY_MSEC, 0x3, PIN0_3, KEY_TAB, 1, "$%03\r"},
+  {SCANNER_DELAY_MSEC, 0x4, PIN0_4, KEY_ENTER, 1, "$%03\r"},
+  {SCANNER_DELAY_MSEC, 0x5, PIN0_5, KEY_ENTER, 1, "$%03\r"}
 };
 
 //PCA9539 I/O Expander (with A1 = 0 and A0 = 0)
@@ -72,7 +69,6 @@ SoftwareSerial g_muxSerial(MUX_TX, MUX_RX); // RX, TX
 //SimpleTimer object
 SimpleTimer g_timer;
 
-byte g_delay = 0;
 byte g_bscannerNum = 0;
 byte g_debouncedState = 0;
 bool g_isFixtureDetected = false;
@@ -80,40 +76,20 @@ bool g_isFixtureRemoved = false;
 
 byte g_barcode_reply[MAX_BARCODE_DATA] = {0};
 
-//send Keyboard command to indicate start of input data
-void handleStartInput()
-{
-  Keyboard.sendKeyStroke(KEY_ENTER);
-}
-
 //send Keyboard command to cycle to the subsequent input
-void handleNextInput()
+void sendBScannerDelim(byte bscanner_index)
 {
-  Keyboard.sendKeyStroke(KEY_TAB);
-}
-
-//send Keyboard command to indicate data input completed
-void handleScanComplete()
-{
-  Keyboard.sendKeyStroke(KEY_ENTER);
-  Keyboard.sendKeyStroke(KEY_ESCAPE);
+  //print delimiter to indicate end of data
+  Keyboard.sendKeyStroke(g_bscanner[bscanner_index].delim);
 }
 
 void sendBScannerData(byte start_index, byte bscanner_index, byte * raw_data, byte len)
 {
-  //print the barcode scanner index
-  char data_index[2] = {bscanner_index + '0', 0};
-  Keyboard.print(data_index);
-  Keyboard.print(":");
-  
   for(byte index = start_index; index < len; index++)
   {
     char data_byte[2] = {raw_data[index], 0};
     Keyboard.print(data_byte);
-  }
-  
-  //print LF to indicate end of data
-  Keyboard.print("\n");
+  }  
 }
 
 void decodeBScannerData(byte bscanner_index, byte * raw_data, byte len)
@@ -156,17 +132,9 @@ void scanBScannerCmd(byte bscanner_index)
   
   g_muxSerial.flush();
 
-  if(bscanner_index == 0)
-  {
-    g_muxSerial.print("P%C43\r"); //trigger the tri-scanning command
-    delay(SCANNER_DELAY_MSEC*6); //delay 3 sec for the command reply
-  }
-  else
-  {
-    g_muxSerial.print("$%03\r"); //trigger the scanning command
-    delay(SCANNER_DELAY_MSEC); //delay for the command reply
-  }
-  
+  g_muxSerial.print(g_bscanner[bscanner_index].cmd); //trigger the scanning command
+  delay(g_bscanner[bscanner_index].wait); //delay for the command reply
+
   while(g_muxSerial.available())
   {
     data_available = true;
@@ -191,14 +159,13 @@ void scanBScannerCmd(byte bscanner_index)
     }
     Keyboard.print("\n");
 #else
-    if(bscanner_index == 0) //bypass decoding for barcode scanner tri-scanning command
+    if(g_bscanner[bscanner_index].do_decode)
+    {
+      decodeBScannerData(bscanner_index, g_barcode_reply, count);
+    }
+    else //bypass decoding, send data directly
     {
       sendBScannerData(1, bscanner_index, g_barcode_reply, count);
-    }
-    else
-    {
-      //decode and send the data
-      decodeBScannerData(bscanner_index, g_barcode_reply, count);
     }
 #endif
   }
@@ -213,11 +180,6 @@ void scanBScannerTrig(byte bscanner_index)
   NOP; //60ns delay
   g_ioExpandr.digitalWrite0(g_bscanner[bscanner_index].en_pin, HIGH);
 
-  //print the barcode scanner index
-  char data_index[2] = {bscanner_index + '0', 0};
-  Keyboard.print(data_index);
-  Keyboard.print(":");
-
   //get the scanned data
   if(g_muxSerial.available())
   {
@@ -227,9 +189,6 @@ void scanBScannerTrig(byte bscanner_index)
       Keyboard.print(data_byte);
     }
   }
-
-  //print LF to indicate end of data
-  Keyboard.print("\n");
 }
 
 void selectBScanner(byte bscanner_index)
@@ -260,7 +219,7 @@ bool debounceSW(byte *state)
   byte raw_state = digitalRead(FIXTURE_SW);
   *state = g_debouncedState;
   
-  if (raw_state == g_debouncedState)
+  if(raw_state == g_debouncedState)
   {
     //set the timer which allows a change from current state.
     count = DEBOUNCE_FREQ_MSEC/TIMER_FREQ_MSEC;
@@ -374,11 +333,8 @@ void loop()
     //set the detection LED to green
     g_ioExpandr.digitalWrite1(FIXTURE_DET, LOW);
 
-    delay(g_delay*SEC_TO_MSEC);
+    delay(START_DELAY_MSEC);
 
-    //trigger sequence to the start
-    handleStartInput();
-    
     //loop through all the barcode scanners
     for(byte index = 0; index < g_bscannerNum; index++)
     {
@@ -390,12 +346,9 @@ void loop()
       scanBScannerCmd(index);
 
       //trigger sequence to the next input
-      handleNextInput();
+      sendBScannerDelim(index);
     }
-
-    //trigger sequence for data completion
-    handleScanComplete();
-
+    
     g_isFixtureDetected = false;
   }
 
