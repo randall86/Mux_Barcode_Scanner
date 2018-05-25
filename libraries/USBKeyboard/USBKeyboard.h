@@ -29,7 +29,7 @@ const uint8_t hid_ascii_map[128] =
 	KEY_ENTER,			// LF	Enter
 	0x00,             // VT 
 	0x00,             // FF 
-	0x00,             // CR 
+	KEY_ENTER,             // CR 
 	0x00,             // SO 
 	0x00,             // SI 
 	0x00,             // DEL

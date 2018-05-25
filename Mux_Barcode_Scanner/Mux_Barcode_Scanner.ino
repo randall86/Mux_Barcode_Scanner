@@ -1,5 +1,5 @@
 // Mux Barcode Scanner System
-// Rev 2.0 (17/05/2018)
+// Rev 2.0 (25/05/2018)
 // - Maxtrax
 #include <DTIOI2CtoParallelConverter.h>
 #include <SimpleTimer.h>
@@ -45,6 +45,7 @@ typedef struct _bscanner_param_t
   int wait;
   byte mux_addr;
   byte en_pin;
+  byte led_pin;
   byte delim;
   byte do_decode;
   char *cmd;
@@ -52,12 +53,12 @@ typedef struct _bscanner_param_t
 
 bscanner_param_t g_bscanner[BSCANNER_MAX_NUM] =
 {
-  {SCANNER_DELAY_MSEC*6, 0x0, PIN0_0, KEY_TAB, 0, "P%C43\r"}, //tri-scanning
-  {SCANNER_DELAY_MSEC, 0x1, PIN0_1, KEY_ENTER, 1, "$%03\r"},
-  {SCANNER_DELAY_MSEC, 0x2, PIN0_2, KEY_ENTER, 1, "$%03\r"},
-  {SCANNER_DELAY_MSEC, 0x3, PIN0_3, KEY_TAB, 1, "$%03\r"},
-  {SCANNER_DELAY_MSEC, 0x4, PIN0_4, KEY_ENTER, 1, "$%03\r"},
-  {SCANNER_DELAY_MSEC, 0x5, PIN0_5, KEY_ENTER, 1, "$%03\r"}
+  {SCANNER_DELAY_MSEC*6, 0x0, PIN0_0, PIN1_0, KEY_TAB, 0, "P%C43\r"}, //tri-scanning
+  {SCANNER_DELAY_MSEC, 0x1, PIN0_1, PIN1_1, KEY_ENTER, 1, "$%03\r"},
+  {SCANNER_DELAY_MSEC, 0x2, PIN0_2, PIN1_2, KEY_ENTER, 1, "$%03\r"},
+  {SCANNER_DELAY_MSEC, 0x3, PIN0_3, PIN1_3, KEY_TAB, 1, "$%03\r"},
+  {SCANNER_DELAY_MSEC, 0x4, PIN0_4, PIN1_4, KEY_ENTER, 1, "$%03\r"},
+  {SCANNER_DELAY_MSEC, 0x5, PIN0_5, PIN1_5, KEY_ENTER, 1, "$%03\r"}
 };
 
 //PCA9539 I/O Expander (with A1 = 0 and A0 = 0)
@@ -120,6 +121,10 @@ void decodeBScannerData(byte bscanner_index, byte * raw_data, byte len)
     {
       sendBScannerData(start_index, bscanner_index, raw_data, len);
     }
+    else //if failed the decoding set the LED to red
+    {
+      g_ioExpandr.digitalWrite1(g_bscanner[bscanner_index].led_pin, LOW);
+    }
   }
 }
 
@@ -168,6 +173,10 @@ void scanBScannerCmd(byte bscanner_index)
       sendBScannerData(1, bscanner_index, g_barcode_reply, count);
     }
 #endif
+  }
+  else //if no data available set the LED to red
+  {
+    g_ioExpandr.digitalWrite1(g_bscanner[bscanner_index].led_pin, LOW);
   }
 }
 
@@ -355,7 +364,7 @@ void loop()
   //reset the LEDs when the fixture is removed
   if(g_isFixtureRemoved)
   {
-    //reset the barcode LED and detection LED to red
+    //reset the barcode LED and detection LED to green
     g_ioExpandr.digitalWritePort1(0xFF);
 
     g_isFixtureRemoved = false;
