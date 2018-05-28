@@ -7,6 +7,7 @@
 #include <EEPROM.h>
 #include <USBKeyboard.h>
 
+//#define DEBUG_HW
 //#define DEBUG
 
 #define THUMB_SW_BCD8 A3
@@ -53,11 +54,11 @@ typedef struct _bscanner_param_t
 
 bscanner_param_t g_bscanner[BSCANNER_MAX_NUM] =
 {
-  {SCANNER_DELAY_MSEC*6, 0x0, PIN0_0, PIN1_0, KEY_TAB, 0, "P%C43\r"}, //tri-scanning
-  {SCANNER_DELAY_MSEC, 0x1, PIN0_1, PIN1_1, KEY_ENTER, 1, "$%03\r"},
+  {SCANNER_DELAY_MSEC*6, 0x0, PIN0_0, PIN1_0, KEY_ENTER, 0, "P%C43\r"}, //tri-scanning
+  {SCANNER_DELAY_MSEC, 0x1, PIN0_1, PIN1_1, KEY_TAB, 1, "$%03\r"},
   {SCANNER_DELAY_MSEC, 0x2, PIN0_2, PIN1_2, KEY_ENTER, 1, "$%03\r"},
-  {SCANNER_DELAY_MSEC, 0x3, PIN0_3, PIN1_3, KEY_TAB, 1, "$%03\r"},
-  {SCANNER_DELAY_MSEC, 0x4, PIN0_4, PIN1_4, KEY_ENTER, 1, "$%03\r"},
+  {SCANNER_DELAY_MSEC, 0x3, PIN0_3, PIN1_3, KEY_ENTER, 1, "$%03\r"},
+  {SCANNER_DELAY_MSEC, 0x4, PIN0_4, PIN1_4, KEY_TAB, 1, "$%03\r"},
   {SCANNER_DELAY_MSEC, 0x5, PIN0_5, PIN1_5, KEY_ENTER, 1, "$%03\r"}
 };
 
@@ -80,21 +81,52 @@ byte g_barcode_reply[MAX_BARCODE_DATA] = {0};
 //send Keyboard command to cycle to the subsequent input
 void sendBScannerDelim(byte bscanner_index)
 {
+#ifndef DEBUG_HW
   //print delimiter to indicate end of data
   Keyboard.sendKeyStroke(g_bscanner[bscanner_index].delim);
+#endif
 }
 
-void sendBScannerData(byte start_index, byte bscanner_index, byte * raw_data, byte len)
+void sendBScannerData(byte start_index, byte * raw_data, byte len)
 {
   for(byte index = start_index; index < len; index++)
   {
+#ifdef DEBUG_HW
+    Serial.write(raw_data[index]);
+#else
     char data_byte[2] = {raw_data[index], 0};
     Keyboard.print(data_byte);
-  }  
+#endif
+  }
+}
+
+void decodeSpecial(byte * start_index, byte * raw_data, byte * len)
+{        
+  byte first = 0;
+  
+  for(byte index = *start_index; index < *len; index++)
+  {
+    if('|' == raw_data[index])
+    {
+      if(0 == first)
+      {
+        first = index;
+        *start_index = first + 1;
+        continue;
+      }
+      else
+      {
+        *len = index;  
+        break;
+      }
+    }
+  }
 }
 
 void decodeBScannerData(byte bscanner_index, byte * raw_data, byte len)
 {
+  bool decoding_pass = false;
+  
   //received data is at least 7 bytes
   if(len > CODEXML_HDR_LEN)
   {
@@ -119,12 +151,22 @@ void decodeBScannerData(byte bscanner_index, byte * raw_data, byte len)
     //send the decoded data
     if(0 != start_index)
     {
-      sendBScannerData(start_index, bscanner_index, raw_data, len);
+      if((bscanner_index > 1) && (bscanner_index < 5))
+      {
+        decodeSpecial(&start_index, raw_data, &len);
+      }
+
+      if(start_index < len)
+      {
+        sendBScannerData(start_index, raw_data, len);
+        decoding_pass = true;
+      }
     }
-    else //if failed the decoding set the LED to red
-    {
-      g_ioExpandr.digitalWrite1(g_bscanner[bscanner_index].led_pin, LOW);
-    }
+  }
+
+  if(!decoding_pass) //failed decoding set the LED to red
+  {
+    g_ioExpandr.digitalWrite1(g_bscanner[bscanner_index].led_pin, LOW);
   }
 }
 
@@ -134,35 +176,44 @@ void scanBScannerCmd(byte bscanner_index)
   bool data_available = false;
   byte count = 0;
   memset(g_barcode_reply, 0, MAX_BARCODE_DATA);
-  
-  g_muxSerial.flush();
 
+#ifdef DEBUG_HW
+  Serial.print("Sending cmd: ");
+  Serial.print(g_bscanner[bscanner_index].cmd);
+  Serial.println();
+#endif
+
+  g_muxSerial.print("$%00\r"); //dummy command
   g_muxSerial.print(g_bscanner[bscanner_index].cmd); //trigger the scanning command
+  g_muxSerial.flush();
   delay(g_bscanner[bscanner_index].wait); //delay for the command reply
 
-  while(g_muxSerial.available())
+  //get the scanned data
+  if(g_muxSerial.available())
   {
-    data_available = true;
-    
-    //read and store the raw data for decoding
-    g_barcode_reply[count++] = g_muxSerial.read();
-    
-    //check if raw data exceeds buffer size
-    if(count >= MAX_BARCODE_DATA)
+    while(g_muxSerial.available())
     {
-      break;
+      data_available = true;
+      
+      //read and store the raw data for decoding
+      g_barcode_reply[count++] = g_muxSerial.read();
+    
+      //check if raw data exceeds buffer size
+      if(count >= MAX_BARCODE_DATA)
+      {
+        break;
+      }
     }
   }
   
   if(data_available)
   {
-#ifdef DEBUG
-    for(byte i = 0; i < count; i++)
-    {
-      char data_byte[2] = {g_barcode_reply[i], 0};
-      Keyboard.print(data_byte);
-    }
-    Keyboard.print("\n");
+#ifdef DEBUG_HW
+    Serial.print(bscanner_index);
+    Serial.print(":");
+    //sendBScannerData(1, g_barcode_reply, count);
+    decodeBScannerData(bscanner_index, g_barcode_reply, count);
+    Serial.println();
 #else
     if(g_bscanner[bscanner_index].do_decode)
     {
@@ -170,12 +221,18 @@ void scanBScannerCmd(byte bscanner_index)
     }
     else //bypass decoding, send data directly
     {
-      sendBScannerData(1, bscanner_index, g_barcode_reply, count);
+      sendBScannerData(1, g_barcode_reply, count); //increment to index 1 to discard the spacing
     }
 #endif
+    Serial.flush();
   }
   else //if no data available set the LED to red
   {
+#ifdef DEBUG_HW
+    Serial.print(bscanner_index);
+    Serial.print(":<NO DATA AVAILABLE>");
+    Serial.println();
+#endif
     g_ioExpandr.digitalWrite1(g_bscanner[bscanner_index].led_pin, LOW);
   }
 }
@@ -203,19 +260,17 @@ void scanBScannerTrig(byte bscanner_index)
 void selectBScanner(byte bscanner_index)
 {
   //disable the mux
-  digitalWrite(MUX_EN, LOW);
-  
+  digitalWrite(MUX_EN, LOW);  
   NOP; //60ns delay
-  
+
   //update the mux address lines
   digitalWrite(MUX_A0, GET_BIT(g_bscanner[bscanner_index].mux_addr, 0));
   digitalWrite(MUX_A1, GET_BIT(g_bscanner[bscanner_index].mux_addr, 1));
   digitalWrite(MUX_A2, GET_BIT(g_bscanner[bscanner_index].mux_addr, 2));
-  
-  NOP; //60ns delay
-  
+
   //enable the mux with the updated address
   digitalWrite(MUX_EN, HIGH);
+  NOP; //60ns delay
 }
 
 //returns true if state changed
@@ -283,6 +338,14 @@ byte getBScannerNum()
 void setup()
 {
   Wire.begin(); //need to start the Wire for I2C devices to function
+  Serial.flush();
+#ifdef DEBUG_HW
+  Serial.begin(115200);
+  Serial.print("Beginning HW debugging sequence...");
+  Serial.println();
+#else
+  Keyboard.init(); //init the USB Keyboard HID driver
+#endif
   
   // define pin modes for tx, rx
   pinMode(MUX_RX, OUTPUT);
@@ -290,6 +353,7 @@ void setup()
   
   //set the data rate for the SoftwareSerial port
   g_muxSerial.begin(9600);
+  g_muxSerial.flush();
 
   //init the barcode scanner enable pins and LED as output
   g_ioExpandr.portMode0(ALLOUTPUT);
@@ -327,8 +391,6 @@ void setup()
 
   //initialize the debounce timer
   g_timer.setInterval(TIMER_FREQ_MSEC, debounceSWRoutine);
-
-  Keyboard.init(); //init the USB Keyboard HID driver
 }
 
 void loop()
@@ -339,6 +401,15 @@ void loop()
   //perform scanning if the fixture is in place
   if(g_isFixtureDetected)
   {
+#if defined(DEBUG_HW) || defined(DEBUG)
+    selectBScanner(g_bscannerNum-1);
+    scanBScannerCmd(g_bscannerNum-1);
+    sendBScannerDelim(g_bscannerNum-1);
+
+    selectBScanner(g_bscannerNum);
+    scanBScannerCmd(g_bscannerNum);
+    sendBScannerDelim(g_bscannerNum);
+#else
     //set the detection LED to green
     g_ioExpandr.digitalWrite1(FIXTURE_DET, LOW);
 
@@ -349,15 +420,15 @@ void loop()
     {
       //select the barcode scanner mux addr
       selectBScanner(index);
-
+      
       //perform the scanning and send the data
       //scanBScannerTrig(index);
       scanBScannerCmd(index);
-
+      
       //trigger sequence to the next input
       sendBScannerDelim(index);
     }
-    
+#endif
     g_isFixtureDetected = false;
   }
 
