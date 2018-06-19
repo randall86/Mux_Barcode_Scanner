@@ -1,5 +1,5 @@
 // Mux Barcode Scanner System
-// Rev 2.0 (25/05/2018)
+// Rev 2.0 (19/06/2018)
 // - Maxtrax
 #include <DTIOI2CtoParallelConverter.h>
 #include <SimpleTimer.h>
@@ -29,7 +29,7 @@
 #define DEBOUNCE_FREQ_MSEC 200 //stable time before switch state changed
 #define TIMER_FREQ_MSEC 50 //read the switch every 50ms
 
-#define BSCANNER_MAX_NUM 6
+#define BSCANNER_MAX_NUM 5
 #define BSCANNER_BIT_MASK ((1 << BSCANNER_MAX_NUM) - 1)
 
 #define GET_BIT(val, shift) ((val >> (shift & BSCANNER_BIT_MASK)) & 1)
@@ -40,6 +40,8 @@
 
 const byte SOH = 0x01;
 const byte RS = 0x1E;
+const byte EOT = 0x04;
+const byte KEY_NONE = 0xFF;
 
 typedef struct _bscanner_param_t
 {
@@ -54,12 +56,11 @@ typedef struct _bscanner_param_t
 
 bscanner_param_t g_bscanner[BSCANNER_MAX_NUM] =
 {
-  {SCANNER_DELAY_MSEC*6, 0x0, PIN0_0, PIN1_0, KEY_ENTER, 0, "P%C43\r"}, //tri-scanning
+  {SCANNER_DELAY_MSEC*6, 0x0, PIN0_0, PIN1_0, KEY_NONE, 0, "P%C43\r"}, //tri-scanning
   {SCANNER_DELAY_MSEC, 0x1, PIN0_1, PIN1_1, KEY_TAB, 1, "$%03\r"},
   {SCANNER_DELAY_MSEC, 0x2, PIN0_2, PIN1_2, KEY_ENTER, 1, "$%03\r"},
   {SCANNER_DELAY_MSEC, 0x3, PIN0_3, PIN1_3, KEY_ENTER, 1, "$%03\r"},
-  {SCANNER_DELAY_MSEC, 0x4, PIN0_4, PIN1_4, KEY_TAB, 1, "$%03\r"},
-  {SCANNER_DELAY_MSEC, 0x5, PIN0_5, PIN1_5, KEY_ENTER, 1, "$%03\r"}
+  {SCANNER_DELAY_MSEC, 0x4, PIN0_4, PIN1_4, KEY_TAB, 1, "$%03\r"}
 };
 
 //PCA9539 I/O Expander (with A1 = 0 and A0 = 0)
@@ -82,8 +83,11 @@ byte g_barcode_reply[MAX_BARCODE_DATA] = {0};
 void sendBScannerDelim(byte bscanner_index)
 {
 #ifndef DEBUG_HW
-  //print delimiter to indicate end of data
-  Keyboard.sendKeyStroke(g_bscanner[bscanner_index].delim);
+  if(KEY_NONE != g_bscanner[bscanner_index].delim)
+  {
+    //print delimiter to indicate end of data
+    Keyboard.sendKeyStroke(g_bscanner[bscanner_index].delim);
+  }
 #endif
 }
 
@@ -135,15 +139,16 @@ void decodeBScannerData(byte bscanner_index, byte * raw_data, byte len)
     //decode the header(CodeXML-start) to find the start of data
     for(byte raw_index = CODEXML_HDR_LEN; raw_index < len; raw_index++)
     {
-      if( (SOH == raw_data[raw_index - 7]) &&
-          ('X' == raw_data[raw_index - 6]) &&
-          (RS == raw_data[raw_index - 5]) &&
-          ('a' == raw_data[raw_index - 4]) &&
-          ('p' == raw_data[raw_index - 3]) &&
-          ('/' == raw_data[raw_index - 2]) &&
-          ('d' == raw_data[raw_index - 1]) )
+      if( (SOH == raw_data[raw_index - 8]) &&
+          ('X' == raw_data[raw_index - 7]) &&
+          (RS == raw_data[raw_index - 6]) &&
+          ('a' == raw_data[raw_index - 5]) &&
+          ('p' == raw_data[raw_index - 4]) &&
+          ('/' == raw_data[raw_index - 3]) &&
+          ('d' == raw_data[raw_index - 2]) &&
+          (EOT == raw_data[raw_index - 1]) )
       {
-        start_index = raw_index + 1; //increment to discard the space
+        start_index = raw_index; //increment to discard the space
         break;
       }
     }
@@ -183,7 +188,6 @@ void scanBScannerCmd(byte bscanner_index)
   Serial.println();
 #endif
 
-  g_muxSerial.print("$%00\r"); //dummy command
   g_muxSerial.print(g_bscanner[bscanner_index].cmd); //trigger the scanning command
   g_muxSerial.flush();
   delay(g_bscanner[bscanner_index].wait); //delay for the command reply
@@ -401,15 +405,6 @@ void loop()
   //perform scanning if the fixture is in place
   if(g_isFixtureDetected)
   {
-#if defined(DEBUG_HW) || defined(DEBUG)
-    selectBScanner(g_bscannerNum-1);
-    scanBScannerCmd(g_bscannerNum-1);
-    sendBScannerDelim(g_bscannerNum-1);
-
-    selectBScanner(g_bscannerNum);
-    scanBScannerCmd(g_bscannerNum);
-    sendBScannerDelim(g_bscannerNum);
-#else
     //set the detection LED to green
     g_ioExpandr.digitalWrite1(FIXTURE_DET, LOW);
 
@@ -428,7 +423,7 @@ void loop()
       //trigger sequence to the next input
       sendBScannerDelim(index);
     }
-#endif
+    
     g_isFixtureDetected = false;
   }
 
