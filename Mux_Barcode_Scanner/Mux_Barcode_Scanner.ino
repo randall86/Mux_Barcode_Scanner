@@ -36,12 +36,19 @@
 #define NOP __asm__("nop\n\t") //"nop" executes in one machine cycle (at 16 MHz) yielding a 62.5 ns delay
 
 #define MAX_BARCODE_DATA 64
+#define MAX_BUFFERED_DATA 256
 #define CODEXML_HDR_LEN 7
 
 const byte SOH = 0x01;
 const byte RS = 0x1E;
 const byte EOT = 0x04;
 const byte KEY_NONE = 0xFF;
+
+typedef struct _bscanner_ret_t
+{
+  byte *start_addr;
+  byte len;
+}bscanner_ret_t;
 
 typedef struct _bscanner_param_t
 {
@@ -53,6 +60,15 @@ typedef struct _bscanner_param_t
   byte do_decode;
   char *cmd;
 }bscanner_param_t;
+
+bscanner_ret_t g_bscanner_ret[BSCANNER_MAX_NUM] =
+{
+  {NULL, 0},
+  {NULL, 0},
+  {NULL, 0},
+  {NULL, 0},
+  {NULL, 0}
+};
 
 bscanner_param_t g_bscanner[BSCANNER_MAX_NUM] =
 {
@@ -72,12 +88,14 @@ SoftwareSerial g_muxSerial(MUX_TX, MUX_RX); // RX, TX
 //SimpleTimer object
 SimpleTimer g_timer;
 
+byte g_ret_index = 0;
 byte g_bscannerNum = 0;
 byte g_debouncedState = 0;
 bool g_isFixtureDetected = false;
 bool g_isFixtureRemoved = false;
 
 byte g_barcode_reply[MAX_BARCODE_DATA] = {0};
+byte g_barcode_ret[MAX_BUFFERED_DATA] = {0};
 
 //send Keyboard command to cycle to the subsequent input
 void sendBScannerDelim(byte bscanner_index)
@@ -91,16 +109,41 @@ void sendBScannerDelim(byte bscanner_index)
 #endif
 }
 
-void sendBScannerData(byte start_index, byte * raw_data, byte len)
+void sendBScannerData(byte * raw_data, byte len)
 {
+  if(raw_data != NULL)
+  {
+    for(byte index = 0; index < len; index++)
+    {
+#ifdef DEBUG_HW
+      Serial.write(raw_data[index]);
+#else
+      char data_byte[2] = {raw_data[index], 0};
+      Keyboard.print(data_byte);
+#endif
+    }
+  }
+}
+
+void bufferScannerData(byte bscanner_index, byte start_index, byte * raw_data, byte len)
+{
+  //store the start addr and len
+  g_bscanner_ret[bscanner_index].start_addr = &g_barcode_ret[g_ret_index];
+  g_bscanner_ret[bscanner_index].len = len;
+    
   for(byte index = start_index; index < len; index++)
   {
-#ifdef DEBUG_HW
-    Serial.write(raw_data[index]);
-#else
-    char data_byte[2] = {raw_data[index], 0};
-    Keyboard.print(data_byte);
-#endif
+    if(g_ret_index < MAX_BUFFERED_DATA)
+    {
+      //copy the scanned data into the result buffer
+      g_barcode_ret[g_ret_index++] = raw_data[index];
+    }
+    else
+    {
+      g_bscanner_ret[bscanner_index].start_addr = NULL;
+      g_bscanner_ret[bscanner_index].len = 0;
+      break;
+    }
   }
 }
 
@@ -127,9 +170,9 @@ void decodeSpecial(byte * start_index, byte * raw_data, byte * len)
   }
 }
 
-void decodeBScannerData(byte bscanner_index, byte * raw_data, byte len)
+bool decodeBScannerData(byte bscanner_index, byte * raw_data, byte len)
 {
-  bool decoding_pass = false;
+  bool ret = false;
   
   //received data is at least 7 bytes
   if(len > CODEXML_HDR_LEN)
@@ -163,21 +206,19 @@ void decodeBScannerData(byte bscanner_index, byte * raw_data, byte len)
 
       if(start_index < len)
       {
-        sendBScannerData(start_index, raw_data, len);
-        decoding_pass = true;
+        bufferScannerData(bscanner_index, start_index, raw_data, len);
+        ret = true;
       }
     }
   }
 
-  if(!decoding_pass) //failed decoding set the LED to red
-  {
-    g_ioExpandr.digitalWrite1(g_bscanner[bscanner_index].led_pin, LOW);
-  }
+  return ret;
 }
 
 //trigger the barcode scanning via command
-void scanBScannerCmd(byte bscanner_index)
+bool scanBScannerCmd(byte bscanner_index)
 {
+  bool ret = false;
   bool data_available = false;
   byte count = 0;
   memset(g_barcode_reply, 0, MAX_BARCODE_DATA);
@@ -215,17 +256,18 @@ void scanBScannerCmd(byte bscanner_index)
 #ifdef DEBUG_HW
     Serial.print(bscanner_index);
     Serial.print(":");
-    //sendBScannerData(1, g_barcode_reply, count);
+    //sendBScannerData(g_barcode_reply, count);
     decodeBScannerData(bscanner_index, g_barcode_reply, count);
     Serial.println();
 #else
     if(g_bscanner[bscanner_index].do_decode)
     {
-      decodeBScannerData(bscanner_index, g_barcode_reply, count);
+      ret = decodeBScannerData(bscanner_index, g_barcode_reply, count);
     }
     else //bypass decoding, send data directly
     {
-      sendBScannerData(1, g_barcode_reply, count); //increment to index 1 to discard the spacing
+      bufferScannerData(bscanner_index, 1, g_barcode_reply, count); //increment to index 1 to discard the spacing
+      ret = true;
     }
 #endif
     Serial.flush();
@@ -237,8 +279,9 @@ void scanBScannerCmd(byte bscanner_index)
     Serial.print(":<NO DATA AVAILABLE>");
     Serial.println();
 #endif
-    g_ioExpandr.digitalWrite1(g_bscanner[bscanner_index].led_pin, LOW);
   }
+
+  return ret;
 }
 
 //trigger the barcode scanning via the external trigger pin
@@ -405,6 +448,10 @@ void loop()
   //perform scanning if the fixture is in place
   if(g_isFixtureDetected)
   {
+    bool result = true;
+    g_ret_index = 0; //reset the index to the start of buffer
+    memset(g_barcode_ret, 0, MAX_BUFFERED_DATA);
+    
     //set the detection LED to green
     g_ioExpandr.digitalWrite1(FIXTURE_DET, LOW);
 
@@ -416,12 +463,25 @@ void loop()
       //select the barcode scanner mux addr
       selectBScanner(index);
       
-      //perform the scanning and send the data
-      //scanBScannerTrig(index);
-      scanBScannerCmd(index);
+      //perform the scanning
+      if(!scanBScannerCmd(index))
+      {
+        //failed scanning set the LED to red
+        g_ioExpandr.digitalWrite1(g_bscanner[index].led_pin, LOW);
+        result = false;
+      }
+    }
+
+    if(result)
+    {
+      for(byte index = 0; index < g_bscannerNum; index++)
+      {
+        //send the data only if all scanners successfully scanned
+        sendBScannerData(g_bscanner_ret[index].start_addr, g_bscanner_ret[index].len);
       
-      //trigger sequence to the next input
-      sendBScannerDelim(index);
+        //trigger sequence to the next input
+        sendBScannerDelim(index);
+      }
     }
     
     g_isFixtureDetected = false;
@@ -432,6 +492,13 @@ void loop()
   {
     //reset the barcode LED and detection LED to green
     g_ioExpandr.digitalWritePort1(0xFF);
+
+    for(byte index = 0; index < g_bscannerNum; index++)
+    {
+      //reset the start addr and len
+      g_bscanner_ret[index].start_addr = NULL;
+      g_bscanner_ret[index].len = 0;
+    }
 
     g_isFixtureRemoved = false;
   }
